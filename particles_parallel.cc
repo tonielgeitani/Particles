@@ -58,12 +58,6 @@ template <int dim> class moving_particles
     void output_results(int it, int outputFrequency);
     void error_estimation();
 
-    //MPI_Comm mpi_communicator;
-
-    //const unsigned int n_mpi_processes;
-    //const unsigned int this_mpi_process;
-    //ConditionalOStream pcout;
-
     parallel::distributed::Triangulation<dim> particle_triangulation;
     MappingQ<dim> mapping;
     Particles::ParticleHandler<dim> particle_handler;
@@ -83,11 +77,7 @@ template <int dim> class moving_particles
 
 template <int dim>
 moving_particles<dim>::moving_particles()
-    : //mpi_communicator(MPI_COMM_WORLD)
-    //, n_mpi_processes(Utilities::MPI::n_mpi_processes(mpi_communicator))
-    //, this_mpi_process(Utilities::MPI::this_mpi_process(mpi_communicator))
-    //, pcout(std::cout, (this_mpi_process == 0))
-     particle_triangulation(MPI_COMM_WORLD)
+    : particle_triangulation(MPI_COMM_WORLD)
     , mapping(3),particle_handler(particle_triangulation,mapping)
     , particles_fe(1),particles_dof_handler(particle_triangulation)
     {}
