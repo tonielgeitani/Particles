@@ -34,32 +34,25 @@
 
 using namespace dealii;
 
-int argc;
-char **argv;
-
-Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
-MPI_Comm mpi_communicator(MPI_COMM_WORLD);
-const unsigned int n_mpi_processes(Utilities::MPI::n_mpi_processes(mpi_communicator));
-const unsigned int this_mpi_process(Utilities::MPI::this_mpi_process(mpi_communicator));
-ConditionalOStream pcout(std::cout, (this_mpi_process == 0));
-
 //Solver
 template <int dim> class moving_particles
 {
   public:
     moving_particles();
-    void run(int i, int j);
+    void run();
 
   private:
     void particles_generation();
-    void setup_parallel_vectors();
-    void vortex_euler(double t, double dt, double T);
+    void parallel_weight();
+    void euler(double t, double dt, double T);
     void field_euler(double t, double dt, double T);
-    void vortex_RK4(double t, double dt, double T);
+    void RK4(double t, double dt, double T);
     void field_RK4(double t, double dt, double T);
     void output_results(int it, int outputFrequency);
     void error_estimation();
 
+    MPI_Comm mpi_communicator;
+    parallel::distributed::Triangulation<dim> background_triangulation;
     parallel::distributed::Triangulation<dim> particle_triangulation;
     MappingQ<dim> mapping;
     Particles::ParticleHandler<dim> particle_handler;
@@ -67,59 +60,40 @@ template <int dim> class moving_particles
     DoFHandler<dim> particles_dof_handler;
     Particles::Particle<dim> particles;
 
-    TrilinosWrappers::MPI::Vector vx;
-    TrilinosWrappers::MPI::Vector vy;
-    TrilinosWrappers::MPI::Vector x;
-    TrilinosWrappers::MPI::Vector y;
-
     IndexSet locally_owned_dofs;
 
     double **initial_position;
+
+    ConditionalOStream pcout;
+
 };
 
 template <int dim>
 moving_particles<dim>::moving_particles()
-    : particle_triangulation(MPI_COMM_WORLD)
+    : mpi_communicator(MPI_COMM_WORLD)
+    , background_triangulation(MPI_COMM_WORLD)
+    , particle_triangulation(MPI_COMM_WORLD)
     , mapping(3),particle_handler(particle_triangulation,mapping)
     , particles_fe(1),particles_dof_handler(particle_triangulation)
+    , pcout({std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0})
+
     {}
-
-auto parameters()
-{
-  int i, j;
-  pcout << "Please insert 0 for Single Vortex or 1 for Deformation Field: " << std::endl;
-  std::cin >> i;
-  pcout << "Please insert 0 for Euler Solver or 1 for Runge Kutta 4 Solver: " << std::endl;
-  std::cin >> j;
-
-  if (i == 0)
-  {
-    pcout << "The stream function simulated is a Single Vortex. " << std::endl;
-  }
-  else if (i == 1)
-  {
-    pcout<< "The stream function simulated is a Deformation Field. " << std::endl;
-  }
-
-  if (j == 0)
-  {
-    pcout << "The solver used is Euler Solver. " << std::endl;
-  }
-  else if (j == 1)
-  {
-    pcout << "The solver used is Runge Kutta 4 Solver " << std::endl;
-  }
-
-  struct result {int i; int j;};
-  return   result {i,j};
-}
 
 //Generation of particles using the grid where particles are generated at the
 //locations of the degrees of freedom.
 template <int dim> void moving_particles<dim>::particles_generation()
 {
-  Point<dim> 	center;
+  // Create a square triangulation
+  GridGenerator::hyper_cube(background_triangulation, 0,1);
+  background_triangulation.refine_global(4);
+  // Establish where the particles are living
+  particle_handler.initialize(background_triangulation,mapping);
 
+  // Generate the necessary bounding boxes for the generator of the particles
+  const auto my_bounding_box = GridTools::compute_mesh_predicate_bounding_box(background_triangulation, IteratorFilters::LocallyOwnedCell());
+  const auto global_bounding_boxes = Utilities::MPI::all_gather(MPI_COMM_WORLD, my_bounding_box);
+
+  Point<dim> 	center;
   if (dim == 2)
   {
     center[0] = 0.5;
@@ -140,9 +114,7 @@ template <int dim> void moving_particles<dim>::particles_generation()
   particle_triangulation.refine_global(3);
   particles_dof_handler.distribute_dofs(particles_fe);
 
-  // Generate the necessary bounding boxes for the generator of the particles
-  const auto my_bounding_box = GridTools::compute_mesh_predicate_bounding_box(particle_triangulation, IteratorFilters::LocallyOwnedCell());
-  const auto global_bounding_boxes = Utilities::MPI::all_gather(MPI_COMM_WORLD, my_bounding_box);
+
 
   //Generation of the particles using the Particles::Generators
   Particles::Generators::dof_support_points(particles_dof_handler, global_bounding_boxes, particle_handler);
@@ -155,229 +127,65 @@ template <int dim> void moving_particles<dim>::particles_generation()
   pcout << "Number of Particles: " << particle_handler.n_global_particles()
             << std::endl;
 
-  int n = particle_handler.n_global_particles();
-  initial_position = new double*[n];
-  int i = 0;
+//  int n = particle_handler.n_global_particles();
+//  initial_position = new double*[n];
+//  int i = 0;
 
-  // Get initial location of particles
-  for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-  {
-    initial_position[i] = new double[2];
-    initial_position[i][0] = particle->get_location()[0];
-    initial_position[i][1] = particle->get_location()[1];
+//  // Get initial location of particles
+//  for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
+//  {
+//    initial_position[i] = new double[2];
+//    initial_position[i][0] = particle->get_location()[0];
+//    initial_position[i][1] = particle->get_location()[1];
 
-    i += 1;
-   }
+//    i += 1;
+//   }
 
-  //Outpuytting the Grid
-  std::ofstream out("grid.vtu");
+  //Outputing the Grid
+  std::string grid_file_name("grid-out");
   GridOut       grid_out;
-  grid_out.write_vtu(particle_triangulation, out);
-  pcout << "Grid written to grid.vtu" << std::endl;
-
-  //Displaying the particle distribution before implementation of the velocity profile
-  Particles::DataOut<dim,dim> particle_output;
-  particle_output.build_patches(particle_handler);
-  std::ofstream output("solution-0.vtu");
-  particle_output.write_vtu(output);
-
+  grid_out.write_mesh_per_processor_as_vtu(background_triangulation,grid_file_name);
 }
 
-template <int dim> void moving_particles<dim>::setup_parallel_vectors()
-{
-  locally_owned_dofs = particles_dof_handler.locally_owned_dofs();
-
-  vx.reinit(locally_owned_dofs, MPI_COMM_WORLD);
-  vy.reinit(locally_owned_dofs, MPI_COMM_WORLD);
-  x.reinit(locally_owned_dofs, MPI_COMM_WORLD);
-  y.reinit(locally_owned_dofs, MPI_COMM_WORLD);
-}
-
-template <int dim> void moving_particles<dim>::vortex_euler(double t, double dt, double T)
+template <int dim> void moving_particles<dim>::euler(double t, double dt, double T)
 {
   Point<dim> particle_location;
-
-//  for (const auto &cell : particles_dof_handler.active_cell_iterators())
-//    if (cell->is_locally_owned())
-//    {
-      // Looping over all particles in the domain using a particle iterator
-      for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-      {
-        // Get the position of the particle
-        double x = particle->get_location()[0];
-        double y = particle->get_location()[1];
-
-        // Calculation of the 2 dimensional velocity (single vortex)
-        double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
-
-        // Updating the position of the particles
-        x = x + vx*dt;
-        y = y + vy*dt;
-
-        // Setting the old position equal to the new position of the particle
-        particle_location[0] = x;
-        particle_location[1] = y;
-
-        particle->set_location(particle_location);
-      }
-//    }
-}
-
-template <int dim> void moving_particles<dim>::field_euler(double t, double dt, double T)
-{
-  Point<dim> particle_location;
-
-    // Looping over all particles in the domain using a particle iterator
+  // Looping over all particles in the domain using a particle iterator
     for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
     {
-        // Get the position of the particle
-        double x = particle->get_location()[0];
-        double y = particle->get_location()[1];
+      // Get the position of the particle
+      double x = particle->get_location()[0];
+      double y = particle->get_location()[1];
 
-        // Calculation of the 2 dimensional velocity (deformation field)
-        double vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        double vy = cos((M_PI/T)*t)*cos(4*M_PI*(x + 0.5))
-                    *cos(4*M_PI*(y + 0.5));
+      // Calculation of the 2 dimensional velocity (single vortex)
+      double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
+          *sin(M_PI*y)*cos(M_PI*y);
+      double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
+          *sin(M_PI*x)*cos(M_PI*x);
 
-        // Updating the position of the particles
-        x = x + vx*dt;
-        y = y + vy*dt;
+      // Updating the position of the particles
+      x = x + vx*dt;
+      y = y + vy*dt;
 
-        // Setting the old position equal to the new position of the particle
-        particle_location[0] = x;
-        particle_location[1] = y;
+      // Setting the old position equal to the new position of the particle
+      particle_location[0] = x;
+      particle_location[1] = y;
 
-        particle->set_location(particle_location);
+      particle->set_location(particle_location);
     }
 }
 
-template <int dim> void moving_particles<dim>::vortex_RK4(double t, double dt, double T)
-{
-  Point<dim> particle_location;
-
-    // Looping over all particles in the domain using a particle iterator
-    for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-    {
-        // Get the position of the particle
-        double x = particle->get_location()[0];
-        double y = particle->get_location()[1];
-
-        // Calculation of the 2 dimensional velocity (single vortex)
-        double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
-
-        // Implementation of the Runge Kutta
-        double k1x = vx*dt;
-        x = x + (k1x/2);
-        double k1y = vy*dt;
-        y = y + (k1y/2);
-
-        vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
-
-        double k2x = vx*dt;
-        x = x - (k1x/2) + (k2x/2);
-        double k2y = vy*dt;
-        y = y - (k1y/2) + (k2y/2);
-
-        vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
-
-        double k3x = vx*dt;
-        x = x  - (k2x/2) + k3x;
-        double k3y = vy*dt;
-        y = y  - (k2y/2) + k3y;
-
-        vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
-
-        double k4x = vx*dt;
-        double k4y = vy*dt;
-
-        // Updating the position of the particles
-        x = x - k3x + ((1/6)*(k1x + (2*k2x) + (2*k3x) +k4x));
-        y = y - k3y + ((1/6)*(k1y + (2*k2y) + (2*k3y) +k4y));
-
-        // Setting the old position equal to the new position of the particle
-        particle_location[0] = x;
-        particle_location[1] = y;
-
-        particle->set_location(particle_location);
-    }
-}
-
-template <int dim> void moving_particles<dim>::field_RK4(double t, double dt, double T)
-{
-  Point<dim> particle_location;
-
-    // Looping over all particles in the domain using a particle iterator
-    for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-    {
-        // Get the position of the particle
-        double x = particle->get_location()[0];
-        double y = particle->get_location()[1];
-
         // Calculation of the 2 dimensional velocity (deformation field)
-        double vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y+ 0.5));
-        double vy = cos((M_PI/T)*t)*cos(4*M_PI*(x + 0.5))
-                    *cos(4*M_PI*(y+ 0.5));
+//        double vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
+//                    *sin(4*M_PI*(y + 0.5));
+//        double vy = cos((M_PI/T)*t)*cos(4*M_PI*(x + 0.5))
+//                    *cos(4*M_PI*(y + 0.5));
 
-        // Implementation of the Runge Kutta
-        double k1x = vx*dt;
-        x = x + (k1x/2);
-        double k1y = vy*dt;
-        y = y + (k1y/2);
 
-        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
-
-        double k2x = vx*dt;
-        x = x - (k1x/2) + (k2x/2);
-        double k2y = vy*dt;
-        y = y - (k1y/2) + (k2y/2);
-
-        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
-
-        double k3x = vx*dt;
-        x = x  - (k2x/2) + k3x;
-        double k3y = vy*dt;
-        y = y  - (k2y/2) + k3y;
-
-        vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*t)*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
-
-        double k4x = vx*dt;
-        double k4y = vy*dt;
-
-        // Updating the position of the particles
-        x = x - k3x + ((1/6)*(k1x + (2*k2x) + (2*k3x) +k4x));
-        y = y - k3y + ((1/6)*(k1y + (2*k2y) + (2*k3y) +k4y));
-
-        // Setting the old position equal to the new position of the particle
-        particle_location[0] = x;
-        particle_location[1] = y;
-
-        particle->set_location(particle_location);
+template <int dim> void moving_particles<dim>::parallel_weight()
+{
+  for (const auto &cell : background_triangulation.active_cell_iterators())
+    {
     }
 }
 
@@ -412,52 +220,45 @@ template <int dim> void moving_particles<dim>::output_results(int it, int output
   {
     Particles::DataOut<dim,dim> particle_output;
     particle_output.build_patches(particle_handler);
-    std::ofstream output("solution-" + std::to_string(it) + ".vtu");
-    particle_output.write_vtu(output);
+    std::string output_folder("output/");
+    std::string file_name("solution");
+
+    particle_output.write_vtu_with_pvtu_record(output_folder,file_name,it,mpi_communicator,6);
+
+    //Outputing the Grid
+    std::string grid_file_name("output/grid."+Utilities::int_to_string(it));
+    GridOut       grid_out;
+    grid_out.write_mesh_per_processor_as_vtu(background_triangulation,grid_file_name);
   }
 }
 
-template <int dim> void moving_particles<dim>::run(int i, int j)
+template <int dim> void moving_particles<dim>::run()
 {
   int it = 0;
-  int outputFrequency = 50;
+  int outputFrequency = 20;
   double t = 0;
-  double T = 2;
+  double T = 4;
   double dt = 0.001;
 
   particles_generation();
 
   // Looping over time in order to move the particles using the stream function
   while (t<T)
-  {
-    if (i == 0 && j == 0)
     {
-      vortex_euler(t, dt, T);
+      euler(t, dt, T);
+      t += dt;
+      ++ it;
+      particle_handler.sort_particles_into_subdomains_and_cells();
+      output_results(it,outputFrequency);
     }
-    else if (i == 0 && j == 1)
-    {
-      vortex_RK4(t, dt, T);
-    }
-    else if (i == 1 && j == 0)
-    {
-      field_euler(t, dt, T);
-    }
-    else if (i == 1 && j == 1)
-    {
-      field_RK4(t, dt, T);
-    }
-    output_results(it,outputFrequency);
-    t += dt;
-    ++ it;
-  }
-  error_estimation();
+//  error_estimation();
 }
 
-int main()
+int main(int argc, char* argv[])
 {
-  auto[i,j] = parameters();
+  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
   moving_particles<2> solution;
-  solution.run(i,j);
+  solution.run();
 
   return 0;
 }
