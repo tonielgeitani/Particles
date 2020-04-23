@@ -15,6 +15,8 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/mapping_q.h>
+#include <deal.II/fe/fe_q.h>
+
 
 #include <deal.II/particles/generators.h>
 #include <deal.II/particles/particle_handler.h>
