@@ -259,62 +259,62 @@ template <int dim> void moving_particles<dim>::vortex_RK4(double t, double dt, d
 {
   Point<dim> particle_location;
 
-    // Looping over all particles in the domain using a particle iterator
-    for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-    {
-        // Get the position of the particle
-        double x = particle->get_location()[0];
-        double y = particle->get_location()[1];
+  // Looping over all particles in the domain using a particle iterator
+  for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
+  {
+      // Get the position of the particle
+      double x = particle->get_location()[0];
+      double y = particle->get_location()[1];
 
-        // Calculation of the 2 dimensional velocity (single vortex)
-        double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
+      // Calculation of the 2 dimensional velocity (single vortex)
+      double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
+                  *sin(M_PI*y)*cos(M_PI*y);
+      double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
+                  *sin(M_PI*x)*cos(M_PI*x);
 
-        // Implementation of the Runge Kutta
-        double k1x = vx*dt;
-        x = x + (k1x/2);
-        double k1y = vy*dt;
-        y = y + (k1y/2);
+      // Implementation of the Runge Kutta
+      double k1x = vx*dt;
+      double x1 = x + (k1x/2);
+      double k1y = vy*dt;
+      double y1 = y + (k1y/2);
 
-        vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
+      vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x1),2)
+                  *sin(M_PI*y1)*cos(M_PI*y1);
+      vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y1),2)
+                  *sin(M_PI*x1)*cos(M_PI*x1);
 
-        double k2x = vx*dt;
-        x = x - (k1x/2) + (k2x/2);
-        double k2y = vy*dt;
-        y = y - (k1y/2) + (k2y/2);
+      double k2x = vx*dt;
+      double x2 = x  + (k2x/2);
+      double k2y = vy*dt;
+      double y2 = y  + (k2y/2);
 
-        vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
+      vx = -2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*x2),2)
+                  *sin(M_PI*y2)*cos(M_PI*y2);
+      vy = 2*cos((M_PI/T)*(t+(dt/2)))*pow(sin(M_PI*y2),2)
+                  *sin(M_PI*x2)*cos(M_PI*x2);
 
-        double k3x = vx*dt;
-        x = x  - (k2x/2) + k3x;
-        double k3y = vy*dt;
-        y = y  - (k2y/2) + k3y;
+      double k3x = vx*dt;
+      double x3 = x + k3x;
+      double k3y = vy*dt;
+      double y3 = y  + k3y;
 
-        vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-                    *sin(M_PI*y)*cos(M_PI*y);
-        vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-                    *sin(M_PI*x)*cos(M_PI*x);
+      vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x3),2)
+                  *sin(M_PI*y3)*cos(M_PI*y3);
+      vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y3),2)
+                  *sin(M_PI*x3)*cos(M_PI*x3);
 
-        double k4x = vx*dt;
-        double k4y = vy*dt;
+      double k4x = vx*dt;
+      double k4y = vy*dt;
 
-        // Updating the position of the particles
-        x = x - k3x + ((1/6)*(k1x + (2*k2x) + (2*k3x) +k4x));
-        y = y - k3y + ((1/6)*(k1y + (2*k2y) + (2*k3y) +k4y));
+      // Updating the position of the particles
+      x = x  + ((k1x + (2*k2x) + (2*k3x) +k4x)/6);
+      y = y  + ((k1y + (2*k2y) + (2*k3y) +k4y)/6);
 
-        // Setting the old position equal to the new position of the particle
-        particle_location[0] = x;
-        particle_location[1] = y;
+      // Setting the old position equal to the new position of the particle
+      particle_location[0] = x;
+      particle_location[1] = y;
 
-        particle->set_location(particle_location);
+      particle->set_location(particle_location);
     }
 }
 
@@ -337,41 +337,41 @@ template <int dim> void moving_particles<dim>::field_RK4(double t, double dt, do
 
         // Implementation of the Runge Kutta
         double k1x = vx*dt;
-        x = x + (k1x/2);
+        double x1 = x + (k1x/2);
         double k1y = vy*dt;
-        y = y + (k1y/2);
+        double y1 = y + (k1y/2);
 
-        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
+        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x1 + 0.5))
+                    *sin(4*M_PI*(y1 + 0.5));
+        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x1+ 0.5))
+                    *cos(4*M_PI*(y1 + 0.5));
 
         double k2x = vx*dt;
-        x = x - (k1x/2) + (k2x/2);
+        double x2 = x + (k2x/2);
         double k2y = vy*dt;
-        y = y - (k1y/2) + (k2y/2);
+        double y2 = y + (k2y/2);
 
-        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
+        vx = cos((M_PI/T)*(t+(dt/2)))*sin(4*M_PI*(x2 + 0.5))
+                    *sin(4*M_PI*(y2+ 0.5));
+        vy = cos((M_PI/T)*(t+(dt/2)))*cos(4*M_PI*(x2+ 0.5))
+                    *cos(4*M_PI*(y2 + 0.5));
 
         double k3x = vx*dt;
-        x = x  - (k2x/2) + k3x;
+        double x3 = x  - (k2x/2) + k3x;
         double k3y = vy*dt;
-        y = y  - (k2y/2) + k3y;
+        double y3 = y  - (k2y/2) + k3y;
 
-        vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
-                    *sin(4*M_PI*(y + 0.5));
-        vy = cos((M_PI/T)*t)*cos(4*M_PI*(x+ 0.5))
-                    *cos(4*M_PI*(y + 0.5));
+        vx = cos((M_PI/T)*(t+dt))*sin(4*M_PI*(x3 + 0.5))
+                    *sin(4*M_PI*(y3 + 0.5));
+        vy = cos((M_PI/T)*(t+dt))*cos(4*M_PI*(x3+ 0.5))
+                    *cos(4*M_PI*(y3 + 0.5));
 
         double k4x = vx*dt;
         double k4y = vy*dt;
 
         // Updating the position of the particles
-        x = x - k3x + ((1/6)*(k1x + (2*k2x) + (2*k3x) +k4x));
-        y = y - k3y + ((1/6)*(k1y + (2*k2y) + (2*k3y) +k4y));
+        x = x + ((k1x + (2*k2x) + (2*k3x) +k4x)/6);
+        y = y + ((k1y + (2*k2y) + (2*k3y) +k4y)/6);
 
         // Setting the old position equal to the new position of the particle
         particle_location[0] = x;
