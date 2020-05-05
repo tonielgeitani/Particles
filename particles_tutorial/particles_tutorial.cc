@@ -147,39 +147,104 @@ template <int dim> void moving_particles<dim>::particles_generation()
   grid_out.write_mesh_per_processor_as_vtu(background_triangulation,grid_file_name);
 }
 
+// Creating the function for the velocity profile.
+template <int dim> class SingleVortex: public Function<dim>
+{
+  public:
+    SingleVortex() : Function<dim>(3) {}
+    virtual void
+    vector_values(const std::vector<Point<dim>> &            points,
+                  std::vector<std::vector<double>> &values) const;
+};
+
+template <int dim>
+void SingleVortex<dim>::vector_values(const std::vector<Point<dim>> & points,
+                                 std::vector<std::vector<double>> & values) const
+{
+    unsigned int n = points.size();
+
+    for (unsigned int k = 0; k < n; ++k)
+    {
+       const Point<dim> &p  = points[k];
+       const double      x  = numbers::PI  * p(0);
+       const double      y  = numbers::PI  * p(1);
+       const double      cx = std::cos(x);
+       const double      cy = std::cos(y);
+       const double      sx = std::sin(x);
+       const double      sy = std::sin(y);
+
+       if (dim == 2)
+        {
+         values[0][k] = sx * sx * sy * cy;
+         values[1][k] = sy * sy * sx * cx;
+        }
+    }
+  }
+
 template <int dim> void moving_particles<dim>::euler(double t, double dt, double T)
 {
   Point<dim> particle_location;
+  std::vector<Point<dim>> coordinate;
+  std::vector<std::vector<double>> vel;
+  int n = particle_handler.n_global_particles();
+
   // Looping over all particles in the domain using a particle iterator
-    for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
-    {
-      // Get the position of the particle
-      double x = particle->get_location()[0];
-      double y = particle->get_location()[1];
+  //  for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
+  //  {
+//      // Get the position of the particle
+//      double x = particle->get_location()[0];
+//      double y = particle->get_location()[1];
 
-      // Calculation of the 2 dimensional velocity (single vortex)
-      double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
-          *sin(M_PI*y)*cos(M_PI*y);
-      double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
-          *sin(M_PI*x)*cos(M_PI*x);
+//      // Calculation of the 2 dimensional velocity (single vortex)
+//      double vx = -2*cos((M_PI/T)*t)*pow(sin(M_PI*x),2)
+//          *sin(M_PI*y)*cos(M_PI*y);
+//      double vy = 2*cos((M_PI/T)*t)*pow(sin(M_PI*y),2)
+//          *sin(M_PI*x)*cos(M_PI*x);
 
-      // Updating the position of the particles
-      x = x + vx*dt;
-      y = y + vy*dt;
+//      // Updating the position of the particles
+//      x = x + vx*dt;
+//      y = y + vy*dt;
 
-      // Setting the old position equal to the new position of the particle
-      particle_location[0] = x;
-      particle_location[1] = y;
+//      // Setting the old position equal to the new position of the particle
+//      particle_location[0] = x;
+//      particle_location[1] = y;
 
-      particle->set_location(particle_location);
+//      particle->set_location(particle_location);
+
+        // Fill a vector of points
+        for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
+        {
+          particle_location[0] = particle->get_location()[0];
+          particle_location[1] = particle->get_location()[1];
+          coordinate.push_back(particle_location);
+        }
+
+        // Initialize vector of vectors vel
+        for (int i = 0; i < 3; i++)
+        {
+          std::vector <double> part;
+          for (int j = 0; j < n; j++)
+          part.push_back(0);
+          vel.push_back(part);
+        }
+
+        SingleVortex<dim> velocity;
+        velocity.vector_values(coordinate,vel);
+
+        // Looping over all particles in the domain using a particle iterator
+        int i = 0;
+        for (auto particle = particle_handler.begin(); particle != particle_handler.end(); ++particle)
+        {
+          // Updating the position of the particles and Setting the old position
+          //equal to the new position of the particle
+          particle_location[0] = particle->get_location()[0] - 2*cos((M_PI/T)*t)*vel[0][i]*dt;
+          particle_location[1] = particle->get_location()[1] + 2*cos((M_PI/T)*t)*vel[1][i]*dt;
+
+          particle->set_location(particle_location);
+          ++i;
+        }
     }
-}
-
-        // Calculation of the 2 dimensional velocity (deformation field)
-//        double vx = cos((M_PI/T)*t)*sin(4*M_PI*(x + 0.5))
-//                    *sin(4*M_PI*(y + 0.5));
-//        double vy = cos((M_PI/T)*t)*cos(4*M_PI*(x + 0.5))
-//                    *cos(4*M_PI*(y + 0.5));
+//}
 
 
 template <int dim> void moving_particles<dim>::parallel_weight()
@@ -237,7 +302,7 @@ template <int dim> void moving_particles<dim>::run()
   int it = 0;
   int outputFrequency = 20;
   double t = 0;
-  double T = 4;
+  double T = 2;
   double dt = 0.001;
 
   particles_generation();
