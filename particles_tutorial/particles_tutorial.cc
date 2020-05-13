@@ -28,6 +28,8 @@
 #include <deal.II/particles/generators.h>
 #include <deal.II/particles/particle_handler.h>
 
+#include <deal.II/numerics/vector_tools.h>
+
 #include <fstream>
 #include <tuple>
 
@@ -35,19 +37,16 @@ using namespace dealii;
 
 
 // Creating the function for the velocity profile.
-// Bruno
-// Take notice I changed from vector values to vector value. This way
-// we can just use a point and return a vector
 template <int dim>
 class SingleVortex : public Function<dim>
 {
-public:
-  SingleVortex()
-    : Function<dim>(3)
-  {}
-  virtual void
-  vector_value(const Point<dim> &point, Vector<double> &values) const override;
-};
+    public:
+    SingleVortex()
+        : Function<dim>(3)
+    {}
+    virtual void
+    vector_value(const Point<dim> &point, Vector<double> &values) const override;
+ };
 
 template <int dim>
 void
@@ -70,20 +69,21 @@ SingleVortex<dim>::vector_value(const Point<dim> &point,
   const double px = numbers::PI * point(0);
   const double py = numbers::PI * point(1);
   const double pt = numbers::PI / T * t;
-  // const double cx = std::cos(numbers::PI * x);
-  // const double cy = std::cos(numbers::PI * y);
-  // const double sx = std::sin(numbers::PI * x);
-  // const double sy = std::sin(numbers::PI * y);
 
   if (dim == 2)
     {
       values[0] = -2 * cos(pt) * pow(sin(px), 2) * sin(py) * cos(py);
       values[1] = 2 * cos(pt) * pow(sin(py), 2) * sin(px) * cos(px);
     }
-  // Bruno
-  // Maybe this would be worth it to define it for 3D also, would be kinda
-  // the same thing though...
-}
+  else if (dim == 3)
+    {
+      values[0] = -2 * cos(pt) * pow(sin(px), 2) * sin(py) * cos(py);
+      values[1] = 2 * cos(pt) * pow(sin(py), 2) * sin(px) * cos(px);
+      values[2] = 0;
+    }
+
+   }
+
 
 // Solver
 template <int dim>
@@ -99,6 +99,8 @@ private:
   particles_generation();
   void
   parallel_weight();
+  void
+  interpolate();
   void
   euler(double dt);
   void
@@ -123,6 +125,7 @@ private:
   // to create it locally instead of keeping as a class member
   FE_Q<dim>                particles_fe;
   DoFHandler<dim>          particles_dof_handler;
+  DoFHandler<dim>          dof_handler;
   Particles::Particle<dim> particles;
 
   // Bruno
@@ -135,7 +138,7 @@ private:
   // Bruno
   // Time of the function will be modified so we need to keep it as a class
   // member. See above and below
-  SingleVortex<dim> velocity;
+  SingleVortex<dim>  velocity;
 
   ConditionalOStream pcout;
 };
@@ -149,9 +152,11 @@ moving_particles<dim>::moving_particles()
   , particle_handler(particle_triangulation, mapping)
   , particles_fe(1)
   , particles_dof_handler(particle_triangulation)
+  , dof_handler(background_triangulation)
   , pcout({std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0})
 
 {}
+
 
 // Generation of particles using the grid where particles are generated at the
 // locations of the degrees of freedom.
@@ -198,6 +203,7 @@ moving_particles<dim>::particles_generation()
                                             global_bounding_boxes,
                                             particle_handler);
 
+
   // Displaying the degrees of freedom
   pcout << "Number of degrees of freedom: " << particles_dof_handler.n_dofs()
         << std::endl;
@@ -228,6 +234,18 @@ moving_particles<dim>::particles_generation()
                                            grid_file_name);
 }
 
+
+template <int dim>
+void moving_particles<dim>::interpolate()
+{
+    const ComponentMask & mask = ComponentMask();
+    const Point<dim> point;
+    const MappingQ<dim>  mapp(1);
+    Vector<double> value(dim);
+    Vector<double> vec(dim);
+
+    VectorTools::interpolate(mapp, dof_handler, velocity.vector_value(point,value), vec, mask);
+}
 
 
 template <int dim>
@@ -340,6 +358,7 @@ moving_particles<dim>::run()
       // You can set the time in the class that inherit from function
       // This way your function directly contains the time ;)!
       velocity.set_time(t);
+      interpolate();
       euler(dt);
       t += dt;
       ++it;
