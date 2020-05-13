@@ -8,6 +8,7 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/mapping_q.h>
 
 #include <deal.II/grid/filtered_iterator.h>
@@ -18,17 +19,14 @@
 #include <deal.II/grid/tria_accessor.h>
 #include <deal.II/grid/tria_iterator.h>
 
-#include <deal.II/lac/trilinos_block_sparse_matrix.h>
-#include <deal.II/lac/trilinos_parallel_block_vector.h>
-#include <deal.II/lac/trilinos_precondition.h>
-#include <deal.II/lac/trilinos_sparse_matrix.h>
 #include <deal.II/lac/trilinos_vector.h>
+
+#include <deal.II/numerics/data_out.h>
+#include <deal.II/numerics/vector_tools.h>
 
 #include <deal.II/particles/data_out.h>
 #include <deal.II/particles/generators.h>
 #include <deal.II/particles/particle_handler.h>
-
-#include <deal.II/numerics/vector_tools.h>
 
 #include <fstream>
 #include <tuple>
@@ -40,13 +38,13 @@ using namespace dealii;
 template <int dim>
 class SingleVortex : public Function<dim>
 {
-    public:
-    SingleVortex()
-        : Function<dim>(3)
-    {}
-    virtual void
-    vector_value(const Point<dim> &point, Vector<double> &values) const override;
- };
+public:
+  SingleVortex()
+    : Function<dim>(dim)
+  {}
+  virtual void
+  vector_value(const Point<dim> &point, Vector<double> &values) const override;
+};
 
 template <int dim>
 void
@@ -81,8 +79,7 @@ SingleVortex<dim>::vector_value(const Point<dim> &point,
       values[1] = 2 * cos(pt) * pow(sin(py), 2) * sin(px) * cos(px);
       values[2] = 0;
     }
-
-   }
+}
 
 
 // Solver
@@ -100,6 +97,8 @@ private:
   void
   parallel_weight();
   void
+  setup_background_dofs();
+  void
   interpolate();
   void
   euler(double dt);
@@ -110,7 +109,9 @@ private:
   void
   field_RK4(double t, double dt, double T);
   void
-  output_results(int it, int outputFrequency);
+  output_particles(int it, int outputFrequency);
+  void
+  output_background(int it, int outputFrequency);
   void
   error_estimation();
 
@@ -125,8 +126,20 @@ private:
   // to create it locally instead of keeping as a class member
   FE_Q<dim>                particles_fe;
   DoFHandler<dim>          particles_dof_handler;
-  DoFHandler<dim>          dof_handler;
   Particles::Particle<dim> particles;
+
+  DoFHandler<dim> background_dof_handler;
+  FESystem<dim>   background_fe;
+
+
+  // Bruno
+  // Look at step-40 to see how MPI vectors work
+  // You need an "owned" and a  "relevant" copy
+  // and they can be both manipulated differently
+  TrilinosWrappers::MPI::Vector field_owned;
+  TrilinosWrappers::MPI::Vector field_relevant;
+
+
 
   // Bruno
   // Would be better to replace that with an std::vector<Point<dim> > because
@@ -138,7 +151,7 @@ private:
   // Bruno
   // Time of the function will be modified so we need to keep it as a class
   // member. See above and below
-  SingleVortex<dim>  velocity;
+  SingleVortex<dim> velocity;
 
   ConditionalOStream pcout;
 };
@@ -152,7 +165,8 @@ moving_particles<dim>::moving_particles()
   , particle_handler(particle_triangulation, mapping)
   , particles_fe(1)
   , particles_dof_handler(particle_triangulation)
-  , dof_handler(background_triangulation)
+  , background_dof_handler(background_triangulation)
+  , background_fe(FE_Q<dim>(1), dim)
   , pcout({std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0})
 
 {}
@@ -234,17 +248,46 @@ moving_particles<dim>::particles_generation()
                                            grid_file_name);
 }
 
+// Sets up the background degree of freedom using their interpolation
+// And allocated a vector where you can store the entire solution
+// of the velocity field
+template <int dim>
+void
+moving_particles<dim>::setup_background_dofs()
+{
+  background_dof_handler.distribute_dofs(background_fe);
+  IndexSet locally_owned_dofs = background_dof_handler.locally_owned_dofs();
+  IndexSet locally_relevant_dofs;
+  DoFTools::extract_locally_relevant_dofs(background_dof_handler,
+                                          locally_relevant_dofs);
+
+  field_owned.reinit(locally_owned_dofs, mpi_communicator);
+  field_relevant.reinit(locally_owned_dofs,
+                        locally_relevant_dofs,
+                        mpi_communicator);
+
+  pcout << "Number of degrees of freedom in background grid: "
+        << background_dof_handler.n_dofs() << std::endl;
+}
 
 template <int dim>
-void moving_particles<dim>::interpolate()
+void
+moving_particles<dim>::interpolate()
 {
-    const ComponentMask & mask = ComponentMask();
-    const Point<dim> point;
-    const MappingQ<dim>  mapp(1);
-    Vector<double> value(dim);
-    Vector<double> vec(dim);
+  // No need for a component mask here since you are interpolating everything
+  // The default mask is true to all
+  // const ComponentMask & mask = ComponentMask();
+  const MappingQ<dim> mapping(1);
 
-    VectorTools::interpolate(mapp, dof_handler, velocity.vector_value(point,value), vec, mask);
+  VectorTools::interpolate(
+    mapping,
+    background_dof_handler,
+    velocity,   // third argument is the function you are specifying itself
+    field_owned // in this case it is better to store the velocity information
+                // in a Trilinos Vector because we will want things to be in
+                // parallel
+  );
+  field_relevant = field_owned;
 }
 
 
@@ -316,7 +359,7 @@ moving_particles<dim>::error_estimation()
 
 template <int dim>
 void
-moving_particles<dim>::output_results(int it, int outputFrequency)
+moving_particles<dim>::output_particles(int it, int outputFrequency)
 {
   // Outputting the results of the simulation at a certain output frequency rate
   if ((it % outputFrequency) == 0)
@@ -324,19 +367,54 @@ moving_particles<dim>::output_results(int it, int outputFrequency)
       Particles::DataOut<dim, dim> particle_output;
       particle_output.build_patches(particle_handler);
       std::string output_folder("output/");
-      std::string file_name("solution");
+      std::string file_name("particles");
 
       particle_output.write_vtu_with_pvtu_record(
         output_folder, file_name, it, mpi_communicator, 6);
-
-      // Outputing the Grid
-      std::string grid_file_name("output/grid." + Utilities::int_to_string(it));
-      GridOut     grid_out;
-      grid_out.write_mesh_per_processor_as_vtu(background_triangulation,
-                                               grid_file_name);
     }
 }
 
+
+template <int dim>
+void
+moving_particles<dim>::output_background(int it, int outputFrequency)
+{
+  // Outputting the results of the simulation at a certain output frequency rate
+  if ((it % outputFrequency) == 0)
+    {
+      std::vector<std::string> solution_names(dim, "velocity");
+      std::vector<DataComponentInterpretation::DataComponentInterpretation>
+        data_component_interpretation(
+          dim, DataComponentInterpretation::component_is_part_of_vector);
+
+
+      DataOut<dim> data_out;
+
+      // Attach the solution data to data_out object
+      data_out.attach_dof_handler(background_dof_handler);
+      data_out.add_data_vector(field_relevant,
+                               solution_names,
+                               DataOut<dim>::type_dof_data,
+                               data_component_interpretation);
+      Vector<float> subdomain(background_triangulation.n_active_cells());
+      for (unsigned int i = 0; i < subdomain.size(); ++i)
+        subdomain(i) = background_triangulation.locally_owned_subdomain();
+      data_out.add_data_vector(subdomain, "subdomain");
+
+      data_out.build_patches(mapping);
+
+      std::string output_folder("output/");
+      std::string file_name("background");
+
+      data_out.write_vtu_with_pvtu_record(
+        output_folder, file_name, it, mpi_communicator, 6);
+    }
+}
+
+
+// Bruno
+// It will be interesting to have two run function. Run with analytical function
+// and other one that runs with the interpolation :)
 template <int dim>
 void
 moving_particles<dim>::run()
@@ -348,7 +426,11 @@ moving_particles<dim>::run()
   double dt              = 0.001;
 
   particles_generation();
-  output_results(it, outputFrequency);
+  setup_background_dofs();
+  interpolate();
+
+  output_particles(it, outputFrequency);
+  output_background(it, outputFrequency);
 
 
   // Looping over time in order to move the particles using the stream function
@@ -363,7 +445,8 @@ moving_particles<dim>::run()
       t += dt;
       ++it;
       particle_handler.sort_particles_into_subdomains_and_cells();
-      output_results(it, outputFrequency);
+      output_particles(it, outputFrequency);
+      output_background(it, outputFrequency);
     }
   //  error_estimation();
 }
