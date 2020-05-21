@@ -1,0 +1,11 @@
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/rebuild_cache.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/info.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/strip_comments.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/distclean.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/debug.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/runclean.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/run.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/release.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/sign.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/edit_cache.dir
+/Users/tonielgeitani/Desktop/Particles Example/Particles/particles_tutorial/build/CMakeFiles/particles_tutorial.dir

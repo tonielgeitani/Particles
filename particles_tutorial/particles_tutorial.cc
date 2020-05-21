@@ -81,6 +81,94 @@ SingleVortex<dim>::vector_value(const Point<dim> &point,
     }
 }
 
+template <int dim>
+class Interpolate : public Function<dim>
+{
+public:
+  Interpolate()
+    : Function<dim>(dim)
+  {}
+  virtual void
+  field_on_particles(const DoFHandler<dim> &                 field_dh,
+                    const Particles::ParticleHandler<dim> &particle_handler,
+                    TrilinosWrappers::MPI::Vector &          field_vector,
+                    TrilinosWrappers::MPI::Vector&           interpolated_field
+                    ) const;
+};
+
+template <int dim>
+void
+Interpolate<dim>::field_on_particles(const DoFHandler<dim> &                field_dh,
+                                    const Particles::ParticleHandler<dim> &particle_handler,
+                                    TrilinosWrappers::MPI::Vector &   field_vector,
+                                    TrilinosWrappers::MPI::Vector&          interpolated_field
+                                    ) const
+{
+    const ComponentMask &field_comps = ComponentMask();
+    if (particle_handler.n_locally_owned_particles() == 0)
+             {
+               interpolated_field.compress(VectorOperation::add);
+               return; // nothing else to do here
+             }
+
+           const auto &tria     = field_dh.get_triangulation();
+           const auto &fe       = field_dh.get_fe();
+           auto        particle = particle_handler.begin();
+           const auto  max_particles_per_cell =
+             particle_handler.n_global_max_particles_per_cell();
+
+           // Take care of components
+           const ComponentMask comps =
+             (field_comps.size() == 0 ? ComponentMask(fe.n_components(), true) :
+                                        field_comps);
+           AssertDimension(comps.size(), fe.n_components());
+           const auto n_comps = comps.n_selected_components();
+
+           AssertDimension(field_vector.size(), field_dh.n_dofs());
+           AssertDimension(interpolated_field.size(),
+                           particle_handler.get_next_free_particle_index() *
+                             n_comps);
+
+           // Global to local indices
+           std::vector<unsigned int> space_gtl(fe.n_components(),
+                                               numbers::invalid_unsigned_int);
+           for (unsigned int i = 0, j = 0; i < space_gtl.size(); ++i)
+             if (comps[i])
+               space_gtl[i] = j++;
+
+           std::vector<types::global_dof_index> dof_indices(fe.dofs_per_cell);
+
+           while (particle != particle_handler.end())
+             {
+               const auto &cell = particle->get_surrounding_cell(tria);
+               const auto &dh_cell =
+                 typename DoFHandler<dim>::cell_iterator(*cell, &field_dh);
+               dh_cell->get_dof_indices(dof_indices);
+               const auto pic         = particle_handler.particles_in_cell(cell);
+               const auto n_particles = particle_handler.n_particles_in_cell(cell);
+
+               Assert(pic.begin() == particle, ExcInternalError());
+               for (unsigned int i = 0; particle != pic.end(); ++particle, ++i)
+                 {
+                   const auto &reference_location =
+                     particle->get_reference_location();
+
+                   const auto id = particle->get_id();
+
+                   for (unsigned int j = 0; j < fe.dofs_per_cell; ++j)
+                     {
+                       const auto comp_j =
+                         space_gtl[fe.system_to_component_index(j).first];
+                       if (comp_j != numbers::invalid_unsigned_int)
+                         interpolated_field[id * n_comps + comp_j] +=
+                           fe.shape_value(j, reference_location) *
+                           field_vector(dof_indices[j]);
+                     }
+
+                  }
+           }
+}
+
 
 // Solver
 template <int dim>
@@ -99,7 +187,11 @@ private:
   void
   setup_background_dofs();
   void
-  interpolate();
+  interpolate_field();
+  void
+  interpolate_field_on_particles();
+  void
+  euler_for_interpolated_values(double dt);
   void
   euler(double dt);
   void
@@ -139,8 +231,6 @@ private:
   TrilinosWrappers::MPI::Vector field_owned;
   TrilinosWrappers::MPI::Vector field_relevant;
 
-
-
   // Bruno
   // Would be better to replace that with an std::vector<Point<dim> > because
   // this is in fact a vector of points ;) What is difficult about this in
@@ -152,6 +242,7 @@ private:
   // Time of the function will be modified so we need to keep it as a class
   // member. See above and below
   SingleVortex<dim> velocity;
+  Interpolate<dim> interpolation;
 
   ConditionalOStream pcout;
 };
@@ -161,7 +252,7 @@ moving_particles<dim>::moving_particles()
   : mpi_communicator(MPI_COMM_WORLD)
   , background_triangulation(MPI_COMM_WORLD)
   , particle_triangulation(MPI_COMM_WORLD)
-  , mapping(3)
+  , mapping(1)
   , particle_handler(particle_triangulation, mapping)
   , particles_fe(1)
   , particles_dof_handler(particle_triangulation)
@@ -272,7 +363,7 @@ moving_particles<dim>::setup_background_dofs()
 
 template <int dim>
 void
-moving_particles<dim>::interpolate()
+moving_particles<dim>::interpolate_field()
 {
   // No need for a component mask here since you are interpolating everything
   // The default mask is true to all
@@ -290,32 +381,71 @@ moving_particles<dim>::interpolate()
   field_relevant = field_owned;
 }
 
+template <int dim>
+void
+moving_particles<dim>::interpolate_field_on_particles()
+{
+    ComponentMask mask(background_fe.n_components(), true);
+    const auto    n_comps = mask.n_selected_components();
+
+    const auto n_local_particles_dofs =
+         particle_handler.n_locally_owned_particles() * n_comps;
+
+    auto particle_sizes =
+         Utilities::MPI::all_gather(MPI_COMM_WORLD, n_local_particles_dofs);
+
+    //const auto my_start = std::accumulate(particle_sizes.begin(),
+    //                                         particle_sizes.begin() + my_mpi_id,
+    //                                         0u);
+
+    IndexSet local_particle_index_set(particle_handler.n_global_particles() *
+                                         n_comps);
+
+    //local_particle_index_set.add_range(my_start,
+    //                                      my_start + n_local_particles_dofs);
+
+//    auto global_particles_index_set =
+//         Utilities::MPI::all_gather(MPI_COMM_WORLD, n_local_particles_dofs);
+
+    TrilinosWrappers::MPI::Vector interpolation_on_particles(
+         local_particle_index_set, MPI_COMM_WORLD);
+
+    interpolation.field_on_particles(
+         background_dof_handler, particle_handler, field_relevant, interpolation_on_particles);
+
+}
 
 template <int dim>
 void
-moving_particles<dim>::euler(double dt)
+moving_particles<dim>::euler_for_interpolated_values(double dt)
 {
-  // Bruno
-  // We presize the vector for the velocity
-  Vector<double> particle_velocity(dim);
 
-  // Looping over all particles in the domain using a particle iterator
-  for (auto particle = particle_handler.begin();
-       particle != particle_handler.end();
-       ++particle)
-    {
-      // Get the velocity using the current location of particle
-      velocity.vector_value(particle->get_location(), particle_velocity);
-
-      Point<dim> particle_location = particle->get_location();
-      // Updating the position of the particles and Setting the old position
-      // equal to the new position of the particle
-      particle_location[0] += particle_velocity[0] * dt;
-      particle_location[1] += particle_velocity[1] * dt;
-
-      particle->set_location(particle_location);
-    }
 }
+
+//template <int dim>
+//void
+//moving_particles<dim>::euler(double dt)
+//{
+//  // Bruno
+//  // We presize the vector for the velocity
+//  Vector<double> particle_velocity(dim);
+
+//  // Looping over all particles in the domain using a particle iterator
+//  for (auto particle = particle_handler.begin();
+//       particle != particle_handler.end();
+//       ++particle)
+//    {
+//      // Get the velocity using the current location of particle
+//      velocity.vector_value(particle->get_location(), particle_velocity);
+
+//      Point<dim> particle_location = particle->get_location();
+//      // Updating the position of the particles and Setting the old position
+//      // equal to the new position of the particle
+//      particle_location[0] += particle_velocity[0] * dt;
+//      particle_location[1] += particle_velocity[1] * dt;
+
+//      particle->set_location(particle_location);
+//    }
 //}
 
 
@@ -427,7 +557,7 @@ moving_particles<dim>::run()
 
   particles_generation();
   setup_background_dofs();
-  interpolate();
+  interpolate_field();
 
   output_particles(it, outputFrequency);
   output_background(it, outputFrequency);
@@ -440,8 +570,9 @@ moving_particles<dim>::run()
       // You can set the time in the class that inherit from function
       // This way your function directly contains the time ;)!
       velocity.set_time(t);
-      interpolate();
-      euler(dt);
+      interpolate_field();
+      interpolate_field_on_particles();
+      //euler(dt);
       t += dt;
       ++it;
       particle_handler.sort_particles_into_subdomains_and_cells();
